@@ -44,7 +44,11 @@ This isn't theory. It's running code with a real token generating real fees.
 ### 3. Agent Coordination (`src/coordination/`)
 - **task-dispatcher.ts** - Multi-agent task routing based on token holdings
 
-### 4. Complete Loop (`src/autonomy-loop.ts`)
+### 4. Morpho Integration (`src/morpho/`)
+- **morpho-client.ts** - Full Morpho Blue client for the $CLAWNCH market
+- **create-market.ts** - Create new Morpho markets for any V3-pooled token
+
+### 5. Complete Loop (`src/autonomy-loop.ts`)
 - Combines all components into a self-sustaining daemon
 - Monitors fees → claims when ready → tops up credits → executes tasks
 
@@ -90,12 +94,32 @@ npm run autonomy:daemon
 │   ├── self-funding/       # OpenRouter credit management
 │   ├── fee-claiming/       # Clanker fee collection
 │   ├── coordination/       # Multi-agent task routing
+│   ├── morpho/             # Morpho Blue DeFi integration
 │   └── autonomy-loop.ts    # Complete autonomy stack
 ├── docs/
 │   └── ARCHITECTURE.md     # Technical deep-dive
 ├── IMPLEMENTATION_PLAN.md  # Build process documentation
 └── README.md               # You are here
 ```
+
+## 🏦 Morpho DeFi Integration
+
+Agents can borrow USDC against their $CLAWNCH holdings without selling tokens:
+
+```bash
+# Check the CLAWNCH Morpho market
+npm run morpho:demo
+
+# Create a new market for any token with V3 pool
+npm run morpho:create -- --token 0x... --lltv 38.5 --dry-run
+```
+
+**The CLAWNCH Market:**
+- Market ID: `0xd7746cb1ce...`
+- LLTV: 38.5% (borrow up to 38.5% of collateral value)
+- Oracle: Uniswap V3 TWAP (5-minute window)
+
+**Why this matters:** Fund operations without selling tokens = preserve upside while accessing liquidity.
 
 ## 🔗 Integration with Clawnch
 

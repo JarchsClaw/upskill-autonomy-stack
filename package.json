@@ -12,6 +12,8 @@
     "dispatch": "npx tsx src/coordination/task-dispatcher.ts",
     "autonomy": "npx tsx src/autonomy-loop.ts",
     "autonomy:daemon": "npx tsx src/autonomy-loop.ts --daemon",
+    "morpho:demo": "npx tsx src/morpho/morpho-client.ts",
+    "morpho:create": "npx tsx src/morpho/create-market.ts",
     "demo": "npx tsx src/autonomy-loop.ts"
   },
   "keywords": [
