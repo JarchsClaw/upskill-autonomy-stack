@@ -42,6 +42,15 @@ import {
   parseArgs,
   wantsHelp,
   printHelp,
+  createLogger,
+  metricCycleStarted,
+  metricCycleCompleted,
+  metricCycleFailed,
+  metricFeeClaimed,
+  metricCreditsPurchased,
+  startHealthServer,
+  stopHealthServer,
+  setHealthDataProvider,
   type CliConfig,
 } from './lib/index.js';
 import { checkFees } from './fee-claiming/check-fees.js';
@@ -49,6 +58,9 @@ import { claimFees } from './fee-claiming/claim-fees.js';
 import { checkCredits } from './self-funding/check-credits.js';
 import { purchaseCredits } from './self-funding/purchase-credits.js';
 import { getAgentInfo } from './coordination/task-dispatcher.js';
+
+// Create structured logger for production logging
+const structuredLog = createLogger('autonomy-loop');
 
 // Configuration (from env with sensible defaults)
 const CONFIG = {
@@ -232,15 +244,32 @@ async function runDaemon() {
   console.log(`⏰ Check Interval: ${CONFIG.checkInterval / 1000}s`);
   console.log('\nPress Ctrl+C to stop\n');
 
+  // Start health check server for container orchestration
+  if (process.env.HEALTH_PORT || process.env.ENABLE_HEALTH_SERVER) {
+    setHealthDataProvider(() => ({
+      cycleCount: state.cycleCount,
+      lastFeeCheck: state.lastFeeCheck?.toISOString() ?? null,
+      lastCreditCheck: state.lastCreditCheck?.toISOString() ?? null,
+      totalWethClaimed: formatEther(state.totalWethClaimed),
+      totalCreditsPurchased: state.totalCreditsPurchased,
+    }));
+    startHealthServer();
+  }
+
   let consecutiveFailures = 0;
 
   while (running) {
     const cycleStart = Date.now();
+    metricCycleStarted();
 
     try {
       await runAutonomyCycle();
+      const duration = Date.now() - cycleStart;
+      metricCycleCompleted(duration, ['fees', 'credits']);
       consecutiveFailures = 0;
     } catch (error) {
+      const duration = Date.now() - cycleStart;
+      metricCycleFailed(error instanceof Error ? error.message : 'Unknown error');
       consecutiveFailures++;
 
       if (isRecoverable(error)) {
@@ -266,6 +295,8 @@ async function runDaemon() {
     }
   }
 
+  // Stop health server on shutdown
+  await stopHealthServer();
   log('👋', 'Daemon stopped gracefully');
 }
 

@@ -139,6 +139,50 @@ This implementation uses the full Clawnch stack:
 | FeeLocker | `0xF3622742b1E446D92e45E22923Ef11C2fcD55D68` |
 | WETH | `0x4200000000000000000000000000000000000006` |
 
+## 🔍 Monitoring & Observability
+
+### Health Check Server
+Enable the health check endpoint for container orchestration (Docker, Kubernetes, Railway):
+
+```bash
+HEALTH_PORT=8080 npm run autonomy:daemon
+# Or:
+ENABLE_HEALTH_SERVER=1 npm run autonomy:daemon
+```
+
+Then check status:
+```bash
+curl http://localhost:8080/health
+curl http://localhost:8080/ready  # Kubernetes readiness probe
+curl http://localhost:8080/live   # Kubernetes liveness probe
+```
+
+### Structured Logging
+Uses pino for production-ready JSON logging:
+
+```bash
+# Development (pretty printed)
+npm run autonomy
+
+# Production (JSON output)
+NODE_ENV=production npm run autonomy
+
+# Verbose logging
+DEBUG=1 npm run autonomy
+```
+
+### Metrics Hooks
+Register custom handlers for external monitoring (Prometheus, Datadog):
+
+```typescript
+import { registerMetricHandler } from './lib/index.js';
+
+registerMetricHandler((metric) => {
+  // Send to your monitoring system
+  console.log(JSON.stringify(metric));
+});
+```
+
 ## 🎨 Why This Implementation Stands Out
 
 1. **Real Token** - $UPSKILL is live and trading, not a demo

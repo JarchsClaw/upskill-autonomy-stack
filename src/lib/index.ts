@@ -105,3 +105,43 @@ export {
   type CliOption,
   type CliConfig,
 } from './cli.js';
+
+// Structured logging
+export {
+  createLogger,
+  logger,
+  logTimed,
+  type LogLevel,
+  type LoggerOptions,
+  type Logger,
+} from './logger.js';
+
+// Metrics collection
+export {
+  registerMetricHandler,
+  metricFeeChecked,
+  metricFeeClaimed,
+  metricCreditsChecked,
+  metricCreditsPurchased,
+  metricTaskDispatched,
+  metricTaskCompleted,
+  metricTaskFailed,
+  metricCycleStarted,
+  metricCycleCompleted,
+  metricCycleFailed,
+  getCounters,
+  getGauges,
+  getMetricsSummary,
+  resetMetrics,
+  type MetricEvent,
+  type MetricData,
+  type MetricHandler,
+} from './metrics.js';
+
+// Health check server
+export {
+  startHealthServer,
+  stopHealthServer,
+  setHealthDataProvider,
+  isHealthServerRunning,
+} from './health.js';
