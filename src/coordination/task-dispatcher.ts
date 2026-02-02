@@ -19,6 +19,7 @@ import {
   UPSKILL_TOKEN,
   validateAddress,
   fetchWithRetry,
+  safeValidateTaskParams,
 } from '../lib/index.js';
 
 // Gateway API endpoint
@@ -96,6 +97,7 @@ export async function getAgentInfo(walletAddress: Address): Promise<AgentInfo> {
 
 /**
  * Dispatch a task to the UPSKILL gateway.
+ * Validates task parameters using Zod schemas before dispatch.
  */
 export async function dispatchTask(request: TaskRequest): Promise<TaskResult> {
   const taskId = `task_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -105,13 +107,25 @@ export async function dispatchTask(request: TaskRequest): Promise<TaskResult> {
   console.log(`   Agent: ${request.agentWallet}`);
   console.log(`   Priority: ${request.priority || 'normal'}`);
 
+  // Validate task params using Zod schemas (security: prevents injection/DoS)
+  const validation = safeValidateTaskParams(request.skill, request.params);
+  if (!validation.success) {
+    console.log(`   ❌ Validation failed: ${validation.error}`);
+    return {
+      success: false,
+      taskId,
+      skill: request.skill,
+      error: `Invalid params: ${validation.error}`,
+    };
+  }
+
   try {
     // Verify agent holdings and quota
     const agentInfo = await getAgentInfo(request.agentWallet);
     console.log(`   Tier: ${agentInfo.tier}`);
     console.log(`   UPSKILL Balance: ${agentInfo.balanceFormatted}`);
 
-    // Call gateway API with retry
+    // Call gateway API with retry (using validated params)
     const result = await fetchWithRetry<unknown>(
       `${GATEWAY_URL}/skill/${request.skill}`,
       {
@@ -120,7 +134,7 @@ export async function dispatchTask(request: TaskRequest): Promise<TaskResult> {
           'Content-Type': 'application/json',
           'X-Wallet-Address': request.agentWallet,
         },
-        body: JSON.stringify(request.params),
+        body: JSON.stringify(validation.data),
       },
       { retries: 2 }
     );

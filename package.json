@@ -14,7 +14,12 @@
     "autonomy:daemon": "npx tsx src/autonomy-loop.ts --daemon",
     "morpho:demo": "npx tsx src/morpho/morpho-client.ts",
     "morpho:create": "npx tsx src/morpho/create-market.ts",
-    "demo": "npx tsx src/autonomy-loop.ts"
+    "demo": "npx tsx src/autonomy-loop.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo 'Add eslint when needed'"
   },
   "keywords": [
     "clawnch",
@@ -35,7 +40,9 @@
   "devDependencies": {
     "@types/node": "^25.2.0",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
   },
   "repository": {
     "type": "git",

@@ -77,6 +77,16 @@ export const CLAWNCH_MARKET_PARAMS = {
   lltv: 385000000000000000n, // 38.5%
 } as const;
 
+// ============ Chainlink Oracles ============
+
+/** Chainlink ETH/USD Price Feed on Base */
+export const CHAINLINK_ETH_USD = '0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70' as Address;
+
+// ============ Gas Configuration ============
+
+/** Maximum gas price in gwei (to prevent overpaying during congestion) */
+export const MAX_GAS_PRICE_GWEI = 50n;
+
 // ============ Zero Address ============
 
 /** Zero address for comparisons */

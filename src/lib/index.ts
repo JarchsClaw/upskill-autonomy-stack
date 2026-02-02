@@ -21,6 +21,7 @@ export {
   UNISWAP_V3_FACTORY_ABI,
   TWAP_FACTORY_ABI,
   COMMERCE_ABI,
+  CHAINLINK_PRICE_FEED_ABI,
 } from './abis.js';
 
 // Contract addresses
@@ -40,6 +41,8 @@ export {
   FEE_TIERS,
   LLTV_OPTIONS,
   ZERO_ADDRESS,
+  CHAINLINK_ETH_USD,
+  MAX_GAS_PRICE_GWEI,
 } from './addresses.js';
 
 // Validation utilities
@@ -58,5 +61,37 @@ export {
   fetchWithRetry,
   RecoverableError,
   isRecoverable,
+  NonRetryableError,
+  isNonRetryable,
   type RetryOptions,
 } from './retry.js';
+
+// Price utilities
+export {
+  getEthPriceUsd,
+  calculateEthForUsd,
+  ethToUsd,
+  clearPriceCache,
+  type PriceData,
+} from './price.js';
+
+// Zod schemas for validation
+export {
+  AddressSchema,
+  Bytes32Schema,
+  AmountStringSchema,
+  TokenSymbolSchema,
+  PrioritySchema,
+  TradeParamsSchema,
+  TransferParamsSchema,
+  BalanceParamsSchema,
+  TaskParamsSchema,
+  TaskRequestSchema,
+  validateTaskParams,
+  safeValidateTaskParams,
+  type TaskParams,
+  type TaskRequest,
+  type TradeParams,
+  type TransferParams,
+  type BalanceParams,
+} from './schemas.js';

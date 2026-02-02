@@ -19,6 +19,10 @@ import {
   validateAmount,
   validateDate,
   withRetry,
+  calculateEthForUsd,
+  getEthPriceUsd,
+  MAX_GAS_PRICE_GWEI,
+  RecoverableError,
 } from '../lib/index.js';
 
 interface PurchaseCalldataResponse {
@@ -80,13 +84,13 @@ async function getPurchaseCalldata(
 
 /**
  * Estimate ETH required for a purchase (with buffer).
- * Uses a conservative estimate based on amount + slippage.
+ * Uses live Chainlink oracle price instead of hardcoded estimate.
+ * 
+ * @param usdAmount - Amount in USD to purchase
+ * @returns ETH needed in wei (includes 20% buffer)
  */
-function estimateEthRequired(usdAmount: number): bigint {
-  // Conservative estimate: $2000/ETH with 20% buffer
-  const ethPrice = 2000;
-  const ethNeeded = (usdAmount * 1.2) / ethPrice;
-  return parseEther(ethNeeded.toFixed(6));
+async function estimateEthRequired(usdAmount: number): Promise<bigint> {
+  return calculateEthForUsd(usdAmount, 20); // 20% buffer
 }
 
 /**
@@ -128,13 +132,27 @@ export async function purchaseCredits(
     return null;
   }
 
-  // Calculate ETH value with buffer
-  const ethValue = estimateEthRequired(amount);
-  console.log(`\n⛽ Estimated ETH needed: ${formatEther(ethValue)} ETH (includes buffer)`);
+  // Calculate ETH value with buffer using live Chainlink price
+  const priceData = await getEthPriceUsd();
+  console.log(`\n📊 Current ETH price: $${priceData.price.toFixed(2)} (via Chainlink)`);
+  
+  const ethValue = await estimateEthRequired(amount);
+  console.log(`⛽ Estimated ETH needed: ${formatEther(ethValue)} ETH (includes 20% buffer)`);
 
   if (balance < ethValue) {
     throw new Error(
       `Insufficient ETH balance. Need ~${formatEther(ethValue)} ETH but have ${formatEther(balance)} ETH`
+    );
+  }
+
+  // Check gas price to avoid overpaying during congestion
+  const gasPrice = await publicClient.getGasPrice();
+  const gasPriceGwei = gasPrice / 1_000_000_000n;
+  console.log(`⛽ Current gas price: ${gasPriceGwei} gwei`);
+  
+  if (gasPriceGwei > MAX_GAS_PRICE_GWEI) {
+    throw new RecoverableError(
+      `Gas price too high: ${gasPriceGwei} gwei (max: ${MAX_GAS_PRICE_GWEI} gwei). Try again later.`
     );
   }
 

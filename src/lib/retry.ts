@@ -40,6 +40,11 @@ export async function withRetry<T>(
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
 
+      // Don't retry NonRetryableErrors (e.g., 4xx HTTP errors)
+      if (lastError.name === 'NonRetryableError') {
+        throw lastError;
+      }
+
       if (attempt > retries) {
         break;
       }
@@ -78,8 +83,8 @@ export async function fetchWithRetry<T>(
         throw new Error(`Server error ${response.status}: ${text}`);
       }
       
-      // Don't retry client errors (4xx)
-      throw new Error(`HTTP ${response.status}: ${text}`);
+      // Don't retry client errors (4xx) - use NonRetryableError
+      throw new NonRetryableError(`HTTP ${response.status}: ${text}`);
     }
 
     return response.json() as Promise<T>;
@@ -108,4 +113,22 @@ export class RecoverableError extends Error {
  */
 export function isRecoverable(error: unknown): error is RecoverableError {
   return error instanceof RecoverableError;
+}
+
+/**
+ * Non-retryable error class for errors that should NOT be retried.
+ * Use for client errors (4xx), validation errors, etc.
+ */
+export class NonRetryableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonRetryableError';
+  }
+}
+
+/**
+ * Check if an error should not be retried.
+ */
+export function isNonRetryable(error: unknown): error is NonRetryableError {
+  return error instanceof NonRetryableError;
 }
