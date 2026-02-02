@@ -8,14 +8,7 @@
  */
 
 import 'dotenv/config';
-
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-
-if (!OPENROUTER_API_KEY) {
-  console.error('Error: OPENROUTER_API_KEY not set');
-  console.error('Get your key from: https://openrouter.ai/keys');
-  process.exit(1);
-}
+import { requireEnv, fetchWithRetry } from '../lib/index.js';
 
 interface CreditsResponse {
   data: {
@@ -24,60 +17,70 @@ interface CreditsResponse {
   };
 }
 
-async function checkCredits(): Promise<{
+export interface CreditBalance {
   totalCredits: number;
   totalUsage: number;
   available: number;
   lowBalance: boolean;
-}> {
-  const response = await fetch('https://openrouter.ai/api/v1/credits', {
-    headers: {
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+}
+
+/** Alert threshold in USD */
+const LOW_BALANCE_THRESHOLD = 5;
+
+/**
+ * Check OpenRouter API credit balance.
+ * @throws Error if API key is invalid or request fails
+ */
+export async function checkCredits(): Promise<CreditBalance> {
+  const apiKey = requireEnv('OPENROUTER_API_KEY');
+
+  const { data } = await fetchWithRetry<CreditsResponse>(
+    'https://openrouter.ai/api/v1/credits',
+    {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
     },
-  });
+    { retries: 2 }
+  );
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch credits: ${response.status} ${response.statusText}`);
-  }
-
-  const { data } = await response.json() as CreditsResponse;
   const available = data.total_credits - data.total_usage;
-  
+
   return {
     totalCredits: data.total_credits,
     totalUsage: data.total_usage,
     available,
-    lowBalance: available < 5, // Alert threshold: $5
+    lowBalance: available < LOW_BALANCE_THRESHOLD,
   };
 }
 
 async function main() {
   console.log('🔍 Checking OpenRouter credit balance...\n');
-  
-  try {
-    const credits = await checkCredits();
-    
-    console.log('📊 OpenRouter Credits:');
-    console.log(`   Total Credits:  $${credits.totalCredits.toFixed(2)}`);
-    console.log(`   Total Usage:    $${credits.totalUsage.toFixed(2)}`);
-    console.log(`   Available:      $${credits.available.toFixed(2)}`);
-    console.log('');
-    
-    if (credits.lowBalance) {
-      console.log('⚠️  LOW BALANCE ALERT: Available credits below $5');
-      console.log('   Run purchase-credits.ts to top up using ETH on Base');
-    } else {
-      console.log('✅ Balance healthy');
-    }
-    
-    return credits;
-  } catch (error) {
-    console.error('❌ Error checking credits:', error);
-    throw error;
+
+  const credits = await checkCredits();
+
+  console.log('📊 OpenRouter Credits:');
+  console.log(`   Total Credits:  $${credits.totalCredits.toFixed(2)}`);
+  console.log(`   Total Usage:    $${credits.totalUsage.toFixed(2)}`);
+  console.log(`   Available:      $${credits.available.toFixed(2)}`);
+  console.log('');
+
+  if (credits.lowBalance) {
+    console.log(`⚠️  LOW BALANCE ALERT: Available credits below $${LOW_BALANCE_THRESHOLD}`);
+    console.log('   Run purchase-credits.ts to top up using ETH on Base');
+  } else {
+    console.log('✅ Balance healthy');
   }
+
+  return credits;
 }
 
-export { checkCredits };
+const isMainModule = process.argv[1]?.endsWith('check-credits.ts');
+if (isMainModule) {
+  main().catch((error) => {
+    console.error('❌ Error:', error.message);
+    process.exit(1);
+  });
+}
 
-// Run if called directly
-main().catch(console.error);
+export { LOW_BALANCE_THRESHOLD };

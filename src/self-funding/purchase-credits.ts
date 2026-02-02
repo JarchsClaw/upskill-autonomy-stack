@@ -2,82 +2,41 @@
  * purchase-credits.ts
  * 
  * Purchase OpenRouter API credits using ETH on Base.
- * This is the core of agent autonomy - using earned trading fees to pay for inference.
+ * Core of agent autonomy - using earned trading fees to pay for inference.
  * 
- * Flow:
- * 1. Request purchase calldata from OpenRouter
- * 2. Execute onchain payment via Coinbase Commerce protocol
- * 3. Credits appear instantly (under $500)
- * 
- * Usage: 
+ * Usage:
  *   OPENROUTER_API_KEY=sk-... PRIVATE_KEY=0x... npx tsx purchase-credits.ts --amount 10
  */
 
 import 'dotenv/config';
-import { createPublicClient, createWalletClient, http, parseEther, formatEther } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
-
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const PRIVATE_KEY = process.env.PRIVATE_KEY as `0x${string}`;
-
-// Validate environment
-if (!OPENROUTER_API_KEY) {
-  console.error('Error: OPENROUTER_API_KEY not set');
-  process.exit(1);
-}
-
-if (!PRIVATE_KEY) {
-  console.error('Error: PRIVATE_KEY not set');
-  process.exit(1);
-}
-
-// Coinbase Commerce protocol ABI for swapAndTransferUniswapV3Native
-const COMMERCE_ABI = [
-  {
-    inputs: [
-      {
-        components: [
-          { internalType: 'uint256', name: 'recipientAmount', type: 'uint256' },
-          { internalType: 'uint256', name: 'deadline', type: 'uint256' },
-          { internalType: 'address payable', name: 'recipient', type: 'address' },
-          { internalType: 'address', name: 'recipientCurrency', type: 'address' },
-          { internalType: 'address', name: 'refundDestination', type: 'address' },
-          { internalType: 'uint256', name: 'feeAmount', type: 'uint256' },
-          { internalType: 'bytes16', name: 'id', type: 'bytes16' },
-          { internalType: 'address', name: 'operator', type: 'address' },
-          { internalType: 'bytes', name: 'signature', type: 'bytes' },
-          { internalType: 'bytes', name: 'prefix', type: 'bytes' },
-        ],
-        internalType: 'struct TransferIntent',
-        name: '_intent',
-        type: 'tuple',
-      },
-      { internalType: 'uint24', name: 'poolFeesTier', type: 'uint24' },
-    ],
-    name: 'swapAndTransferUniswapV3Native',
-    outputs: [],
-    stateMutability: 'payable',
-    type: 'function',
-  },
-] as const;
+import { parseEther, formatEther, type Address } from 'viem';
+import {
+  getPublicClient,
+  getWalletClient,
+  getAccount,
+  COMMERCE_ABI,
+  requireEnv,
+  validateAmount,
+  validateDate,
+  withRetry,
+} from '../lib/index.js';
 
 interface PurchaseCalldataResponse {
   data: {
     web3_data: {
       transfer_intent: {
         metadata: {
-          contract_address: `0x${string}`;
+          contract_address: Address;
         };
         call_data: {
           recipient_amount: string;
           deadline: string;
-          recipient: `0x${string}`;
-          recipient_currency: `0x${string}`;
-          refund_destination: `0x${string}`;
+          recipient: Address;
+          recipient_currency: Address;
+          refund_destination: Address;
           fee_amount: string;
           id: `0x${string}`;
-          operator: `0x${string}`;
+          operator: Address;
           signature: `0x${string}`;
           prefix: `0x${string}`;
         };
@@ -86,16 +45,21 @@ interface PurchaseCalldataResponse {
   };
 }
 
+/**
+ * Get purchase calldata from OpenRouter API.
+ */
 async function getPurchaseCalldata(
   amount: number,
-  senderAddress: `0x${string}`
+  senderAddress: Address
 ): Promise<PurchaseCalldataResponse['data']> {
+  const apiKey = requireEnv('OPENROUTER_API_KEY');
+
   console.log(`📝 Requesting purchase calldata for $${amount}...`);
-  
+
   const response = await fetch('https://openrouter.ai/api/v1/credits/coinbase', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -114,31 +78,45 @@ async function getPurchaseCalldata(
   return data;
 }
 
-async function purchaseCredits(amount: number, dryRun = false) {
-  const account = privateKeyToAccount(PRIVATE_KEY);
-  
-  const publicClient = createPublicClient({
-    chain: base,
-    transport: http('https://mainnet.base.org'),
-  });
+/**
+ * Estimate ETH required for a purchase (with buffer).
+ * Uses a conservative estimate based on amount + slippage.
+ */
+function estimateEthRequired(usdAmount: number): bigint {
+  // Conservative estimate: $2000/ETH with 20% buffer
+  const ethPrice = 2000;
+  const ethNeeded = (usdAmount * 1.2) / ethPrice;
+  return parseEther(ethNeeded.toFixed(6));
+}
 
-  const walletClient = createWalletClient({
-    account,
-    chain: base,
-    transport: http('https://mainnet.base.org'),
-  });
+/**
+ * Purchase OpenRouter credits using ETH on Base.
+ */
+export async function purchaseCredits(
+  amount: number,
+  options: { dryRun?: boolean; knownBalance?: bigint } = {}
+): Promise<string | null> {
+  const { dryRun = false } = options;
+
+  const account = getAccount();
+  const publicClient = getPublicClient();
+  const walletClient = getWalletClient();
 
   console.log('🔐 Wallet:', account.address);
   console.log(`💰 Purchasing $${amount} in OpenRouter credits on Base\n`);
 
-  // Check ETH balance first
-  const balance = await publicClient.getBalance({ address: account.address });
+  // Check ETH balance
+  const balance = options.knownBalance ?? await publicClient.getBalance({ address: account.address });
   console.log(`📊 Current ETH balance: ${formatEther(balance)} ETH`);
 
-  // Get purchase calldata from OpenRouter
+  // Get purchase calldata
   const calldataResponse = await getPurchaseCalldata(amount, account.address);
   const { contract_address } = calldataResponse.web3_data.transfer_intent.metadata;
   const callData = calldataResponse.web3_data.transfer_intent.call_data;
+
+  // Validate deadline
+  const deadline = validateDate(callData.deadline, 'deadline');
+  const deadlineUnix = BigInt(Math.floor(deadline.getTime() / 1000));
 
   console.log(`📋 Contract: ${contract_address}`);
   console.log(`🎯 Recipient: ${callData.recipient}`);
@@ -147,13 +125,23 @@ async function purchaseCredits(amount: number, dryRun = false) {
   if (dryRun) {
     console.log('\n🔍 DRY RUN - Not executing transaction');
     console.log('   Call data prepared successfully');
-    return;
+    return null;
   }
 
-  // Prepare transaction arguments
+  // Calculate ETH value with buffer
+  const ethValue = estimateEthRequired(amount);
+  console.log(`\n⛽ Estimated ETH needed: ${formatEther(ethValue)} ETH (includes buffer)`);
+
+  if (balance < ethValue) {
+    throw new Error(
+      `Insufficient ETH balance. Need ~${formatEther(ethValue)} ETH but have ${formatEther(balance)} ETH`
+    );
+  }
+
+  // Prepare transaction intent
   const intent = {
     recipientAmount: BigInt(callData.recipient_amount),
-    deadline: BigInt(Math.floor(new Date(callData.deadline).getTime() / 1000)),
+    deadline: deadlineUnix,
     recipient: callData.recipient,
     recipientCurrency: callData.recipient_currency,
     refundDestination: callData.refund_destination,
@@ -164,57 +152,64 @@ async function purchaseCredits(amount: number, dryRun = false) {
     prefix: callData.prefix,
   };
 
-  // Include buffer for ETH value - excess is refunded
-  const ethValue = parseEther('0.005'); // ~$11 at current prices, adjust as needed
-
-  console.log(`\n⛽ Estimated ETH needed: ${formatEther(ethValue)} ETH`);
-
-  if (balance < ethValue) {
-    throw new Error(`Insufficient ETH balance. Need ${formatEther(ethValue)} ETH but have ${formatEther(balance)} ETH`);
-  }
-
-  // Simulate first
+  // Execute with retry
   console.log('\n🔄 Simulating transaction...');
-  const { request } = await publicClient.simulateContract({
-    abi: COMMERCE_ABI,
-    account,
-    address: contract_address,
-    functionName: 'swapAndTransferUniswapV3Native',
-    args: [intent, 500], // 500 = 0.05% pool fee tier (lowest)
-    value: ethValue,
-  });
 
-  console.log('✅ Simulation successful!');
+  const txHash = await withRetry(async () => {
+    const { request } = await publicClient.simulateContract({
+      abi: COMMERCE_ABI,
+      account: account.address,
+      address: contract_address,
+      functionName: 'swapAndTransferUniswapV3Native',
+      args: [intent, 500], // 500 = 0.05% pool fee tier
+      value: ethValue,
+    });
 
-  // Execute
-  console.log('\n📤 Executing purchase transaction...');
-  const txHash = await walletClient.writeContract(request);
+    console.log('✅ Simulation successful!');
+    console.log('\n📤 Executing purchase transaction...');
+
+    return walletClient.writeContract(request);
+  }, { retries: 2 });
+
   console.log(`📝 Transaction submitted: https://basescan.org/tx/${txHash}`);
 
   // Wait for confirmation
   console.log('⏳ Waiting for confirmation...');
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-  
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash: txHash,
+    confirmations: 1,
+    pollingInterval: 2000,
+  });
+
   if (receipt.status === 'success') {
     console.log(`\n✅ SUCCESS! $${amount} credits purchased`);
     console.log('   Credits should appear instantly (under $500)');
     console.log('   Verify at: https://openrouter.ai/keys');
   } else {
     console.log('\n❌ Transaction reverted');
+    throw new Error('Transaction reverted');
   }
 
   return txHash;
 }
 
-// Parse command line arguments
-const args = process.argv.slice(2);
-const amountIndex = args.indexOf('--amount');
-const amount = amountIndex !== -1 ? parseFloat(args[amountIndex + 1]) : 10;
-const dryRun = args.includes('--dry-run');
+async function main() {
+  const args = process.argv.slice(2);
+  const amountIndex = args.indexOf('--amount');
+  const amount = amountIndex !== -1 
+    ? validateAmount(args[amountIndex + 1], 'amount')
+    : 10;
+  const dryRun = args.includes('--dry-run');
 
-purchaseCredits(amount, dryRun).catch((error) => {
-  console.error('❌ Error:', error.message);
-  process.exit(1);
-});
+  await purchaseCredits(amount, { dryRun });
+}
 
-export { purchaseCredits, getPurchaseCalldata };
+const isMainModule = process.argv[1]?.endsWith('purchase-credits.ts');
+if (isMainModule) {
+  main().catch((error) => {
+    console.error('❌ Error:', error.message);
+    process.exit(1);
+  });
+}
+
+// purchaseCredits already exported at definition

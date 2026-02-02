@@ -3,8 +3,6 @@
  * 
  * THE COMPLETE AGENT AUTONOMY STACK
  * 
- * This script demonstrates the full self-sustaining agent economy:
- * 
  * ┌─────────────────────────────────────────────────────────────────┐
  * │                    UPSKILL AUTONOMY LOOP                        │
  * ├─────────────────────────────────────────────────────────────────┤
@@ -25,44 +23,40 @@
  * │     └── Token holdings = compute access                        │
  * │                                                                 │
  * │  6. REPEAT: Monitor and auto-replenish                         │
- * │     └── Low credits → claim more fees → buy more credits       │
  * │                                                                 │
  * └─────────────────────────────────────────────────────────────────┘
  * 
- * Built for the Clawnch Bounty - demonstrating real agent autonomy.
  * $UPSKILL Contract: 0xccaee0bf50E5790243c1D58F3682765709edEB07
  * Gateway: https://upskill-gateway-production.up.railway.app
  */
 
 import 'dotenv/config';
-import { createPublicClient, http, formatEther, parseEther } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
+import { formatEther } from 'viem';
+import {
+  getPublicClient,
+  getAccount,
+  UPSKILL_TOKEN,
+  requireEnv,
+  RecoverableError,
+  isRecoverable,
+} from './lib/index.js';
+import { checkFees } from './fee-claiming/check-fees.js';
+import { claimFees } from './fee-claiming/claim-fees.js';
+import { checkCredits } from './self-funding/check-credits.js';
+import { purchaseCredits } from './self-funding/purchase-credits.js';
+import { getAgentInfo } from './coordination/task-dispatcher.js';
 
-// Import our modules
-import { checkFees, FEE_LOCKER_ADDRESS, WETH_ADDRESS } from './fee-claiming/check-fees';
-import { claimFees } from './fee-claiming/claim-fees';
-import { checkCredits } from './self-funding/check-credits';
-import { purchaseCredits } from './self-funding/purchase-credits';
-import { getAgentInfo, dispatchTask, UPSKILL_TOKEN } from './coordination/task-dispatcher';
-
-// Configuration
+// Configuration (from env with sensible defaults)
 const CONFIG = {
-  // Token addresses
   upskillToken: UPSKILL_TOKEN,
-  
-  // Thresholds
-  minCredits: 5,           // Minimum OpenRouter credits before top-up ($)
-  creditPurchaseAmount: 10, // Amount to purchase when topping up ($)
-  minWethForTopup: 0.002,   // Minimum WETH needed to justify claiming (~$5)
-  
-  // Gateway
+  minCredits: parseFloat(process.env.MIN_CREDITS || '5'),
+  creditPurchaseAmount: parseFloat(process.env.CREDIT_PURCHASE_AMOUNT || '10'),
+  minWethForTopup: parseFloat(process.env.MIN_WETH_FOR_TOPUP || '0.002'),
   gatewayUrl: process.env.UPSKILL_GATEWAY_URL || 'https://upskill-gateway-production.up.railway.app',
-  
-  // Intervals (in ms)
-  checkInterval: 5 * 60 * 1000, // 5 minutes
-};
+  checkInterval: parseInt(process.env.CHECK_INTERVAL_MS || '300000', 10),
+} as const;
 
+// Loop state tracking
 interface LoopState {
   lastFeeCheck: Date | null;
   lastCreditCheck: Date | null;
@@ -87,103 +81,119 @@ function log(emoji: string, message: string) {
 }
 
 async function checkAndClaimFees(): Promise<bigint> {
-  const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-  
+  const account = getAccount();
+
   log('🔍', 'Checking accumulated trading fees...');
-  
+
   const feeInfo = await checkFees(account.address, CONFIG.upskillToken);
   state.lastFeeCheck = new Date();
-  
+
   log('📊', `WETH fees: ${feeInfo.wethFeesFormatted} WETH`);
-  
+
   const wethFeesFloat = parseFloat(feeInfo.wethFeesFormatted);
-  
+
   if (wethFeesFloat < CONFIG.minWethForTopup) {
     log('ℹ️', `Fees below threshold (${CONFIG.minWethForTopup} WETH), skipping claim`);
     return 0n;
   }
-  
+
   log('💰', 'Claiming WETH fees...');
   const result = await claimFees(CONFIG.upskillToken, { claimBoth: false });
-  
+
   if (result.wethClaimed > 0n) {
     state.totalWethClaimed += result.wethClaimed;
     log('✅', `Claimed ${formatEther(result.wethClaimed)} WETH!`);
   }
-  
+
   return result.wethClaimed;
 }
 
 async function checkAndTopupCredits(): Promise<boolean> {
   log('🔍', 'Checking OpenRouter credit balance...');
-  
-  try {
-    const credits = await checkCredits();
-    state.lastCreditCheck = new Date();
-    
-    log('📊', `Available credits: $${credits.available.toFixed(2)}`);
-    
-    if (credits.available >= CONFIG.minCredits) {
-      log('✅', 'Credit balance healthy');
-      return false;
-    }
-    
-    log('⚠️', `Credits low! Purchasing $${CONFIG.creditPurchaseAmount}...`);
-    await purchaseCredits(CONFIG.creditPurchaseAmount);
-    state.totalCreditsPurchased += CONFIG.creditPurchaseAmount;
-    log('✅', 'Credits purchased successfully');
-    
-    return true;
-  } catch (error) {
-    log('❌', `Credit check failed: ${error}`);
+
+  const credits = await checkCredits();
+  state.lastCreditCheck = new Date();
+
+  log('📊', `Available credits: $${credits.available.toFixed(2)}`);
+
+  if (credits.available >= CONFIG.minCredits) {
+    log('✅', 'Credit balance healthy');
     return false;
   }
-}
 
-async function executeTask(skill: string, params: Record<string, unknown>): Promise<unknown> {
-  const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-  
-  log('📤', `Executing task: ${skill}`);
-  
-  const result = await dispatchTask({
-    skill,
-    params,
-    agentWallet: account.address,
-  });
-  
-  if (result.success) {
-    state.tasksExecuted++;
-    log('✅', `Task completed: ${result.taskId}`);
-  } else {
-    log('❌', `Task failed: ${result.error}`);
-  }
-  
-  return result;
+  log('⚠️', `Credits low! Purchasing $${CONFIG.creditPurchaseAmount}...`);
+  await purchaseCredits(CONFIG.creditPurchaseAmount);
+  state.totalCreditsPurchased += CONFIG.creditPurchaseAmount;
+  log('✅', 'Credits purchased successfully');
+
+  return true;
 }
 
 async function runAutonomyCycle() {
   state.cycleCount++;
-  
+  const account = getAccount();
+
   console.log('\n' + '═'.repeat(60));
   log('🔄', `AUTONOMY CYCLE ${state.cycleCount}`);
   console.log('═'.repeat(60));
-  
-  // Step 1: Check and claim fees
-  console.log('\n📌 Step 1: Fee Collection');
-  await checkAndClaimFees();
-  
-  // Step 2: Check and top-up credits
-  console.log('\n📌 Step 2: Credit Management');
-  await checkAndTopupCredits();
-  
-  // Step 3: Report agent status
-  console.log('\n📌 Step 3: Agent Status');
-  const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-  const agentInfo = await getAgentInfo(account.address);
-  log('📊', `UPSKILL Balance: ${agentInfo.balanceFormatted}`);
-  log('📊', `Tier: ${agentInfo.tier}`);
-  log('📊', `Daily Quota: ${agentInfo.dailyQuota === Infinity ? 'Unlimited' : agentInfo.dailyQuota}`);
-  
+
+  // Fetch read-only data in parallel for efficiency
+  console.log('\n📌 Step 1: Gathering Status (parallel)');
+  const [feeInfo, credits, agentInfo] = await Promise.all([
+    checkFees(account.address, CONFIG.upskillToken),
+    checkCredits(),
+    getAgentInfo(account.address),
+  ]);
+
+  state.lastFeeCheck = new Date();
+  state.lastCreditCheck = new Date();
+
+  log('📊', `WETH fees: ${feeInfo.wethFeesFormatted} WETH`);
+  log('📊', `Credits: $${credits.available.toFixed(2)}`);
+  log('📊', `UPSKILL: ${agentInfo.balanceFormatted} (${agentInfo.tier})`);
+
+  // Step 2: Claim fees if above threshold
+  console.log('\n📌 Step 2: Fee Management');
+  const wethFeesFloat = parseFloat(feeInfo.wethFeesFormatted);
+
+  if (wethFeesFloat >= CONFIG.minWethForTopup && feeInfo.wethFees > 0n) {
+    log('💰', 'Claiming WETH fees...');
+    try {
+      const result = await claimFees(CONFIG.upskillToken, { claimBoth: false });
+      if (result.wethClaimed > 0n) {
+        state.totalWethClaimed += result.wethClaimed;
+        log('✅', `Claimed ${formatEther(result.wethClaimed)} WETH!`);
+      }
+    } catch (error) {
+      if (isRecoverable(error)) {
+        log('⚠️', `Fee claim skipped: ${error.message}`);
+      } else {
+        throw error;
+      }
+    }
+  } else {
+    log('ℹ️', `Fees below threshold (${CONFIG.minWethForTopup} WETH)`);
+  }
+
+  // Step 3: Top up credits if low
+  console.log('\n📌 Step 3: Credit Management');
+  if (credits.available < CONFIG.minCredits) {
+    log('⚠️', `Credits low! Purchasing $${CONFIG.creditPurchaseAmount}...`);
+    try {
+      await purchaseCredits(CONFIG.creditPurchaseAmount);
+      state.totalCreditsPurchased += CONFIG.creditPurchaseAmount;
+      log('✅', 'Credits purchased successfully');
+    } catch (error) {
+      if (isRecoverable(error)) {
+        log('⚠️', `Credit purchase skipped: ${error.message}`);
+      } else {
+        throw error;
+      }
+    }
+  } else {
+    log('✅', 'Credit balance healthy');
+  }
+
   // Summary
   console.log('\n' + '─'.repeat(60));
   log('📈', 'CYCLE SUMMARY');
@@ -194,6 +204,20 @@ async function runAutonomyCycle() {
   console.log('─'.repeat(60));
 }
 
+// Graceful shutdown handling
+let running = true;
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+process.on('SIGINT', () => {
+  log('🛑', 'Received SIGINT, shutting down gracefully...');
+  running = false;
+});
+
+process.on('SIGTERM', () => {
+  log('🛑', 'Received SIGTERM, shutting down gracefully...');
+  running = false;
+});
+
 async function runDaemon() {
   console.log('\n' + '═'.repeat(60));
   console.log('  UPSKILL AUTONOMY DAEMON');
@@ -203,41 +227,62 @@ async function runDaemon() {
   console.log(`🌐 Gateway: ${CONFIG.gatewayUrl}`);
   console.log(`⏰ Check Interval: ${CONFIG.checkInterval / 1000}s`);
   console.log('\nPress Ctrl+C to stop\n');
-  
-  // Run initial cycle
-  await runAutonomyCycle();
-  
-  // Continue running
-  while (true) {
-    log('⏰', `Next cycle in ${CONFIG.checkInterval / 1000}s...`);
-    await new Promise(resolve => setTimeout(resolve, CONFIG.checkInterval));
-    await runAutonomyCycle();
+
+  let consecutiveFailures = 0;
+
+  while (running) {
+    const cycleStart = Date.now();
+
+    try {
+      await runAutonomyCycle();
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures++;
+
+      if (isRecoverable(error)) {
+        log('⚠️', `Recoverable error: ${error.message}`);
+      } else {
+        log('❌', `Cycle error (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}): ${error}`);
+      }
+
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        log('🛑', 'Too many consecutive failures, stopping daemon');
+        process.exit(1);
+      }
+    }
+
+    if (!running) break;
+
+    const cycleDuration = Date.now() - cycleStart;
+    const remainingWait = Math.max(0, CONFIG.checkInterval - cycleDuration);
+
+    if (remainingWait > 0) {
+      log('⏰', `Next cycle in ${(remainingWait / 1000).toFixed(1)}s...`);
+      await new Promise((resolve) => setTimeout(resolve, remainingWait));
+    }
   }
+
+  log('👋', 'Daemon stopped gracefully');
 }
 
 async function runOnce() {
   console.log('\n' + '═'.repeat(60));
   console.log('  UPSKILL AUTONOMY LOOP - SINGLE RUN');
   console.log('═'.repeat(60));
-  
+
   await runAutonomyCycle();
-  
+
   console.log('\n✅ Single cycle complete');
   console.log('   Run with --daemon for continuous operation');
 }
 
-// Main entry point
 async function main() {
   // Validate environment
-  if (!process.env.PRIVATE_KEY) {
-    console.error('Error: PRIVATE_KEY not set');
-    console.error('Set your wallet private key to participate in the autonomy loop');
-    process.exit(1);
-  }
-  
+  requireEnv('PRIVATE_KEY');
+
   const args = process.argv.slice(2);
   const daemonMode = args.includes('--daemon');
-  
+
   if (daemonMode) {
     await runDaemon();
   } else {
@@ -245,6 +290,9 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+main().catch((error) => {
+  log('❌', `Fatal error: ${error.message}`);
+  process.exit(1);
+});
 
 export { runAutonomyCycle, state as loopState, CONFIG };

@@ -10,29 +10,18 @@
  */
 
 import 'dotenv/config';
-import { createPublicClient, http, formatEther } from 'viem';
-import { base } from 'viem/chains';
+import { formatEther, type Address } from 'viem';
+import {
+  getPublicClient,
+  FEE_LOCKER_ABI,
+  FEE_LOCKER,
+  WETH,
+  validateAddress,
+} from '../lib/index.js';
 
-// Clanker FeeLocker contract on Base
-const FEE_LOCKER_ADDRESS = '0xF3622742b1E446D92e45E22923Ef11C2fcD55D68' as const;
-const WETH_ADDRESS = '0x4200000000000000000000000000000000000006' as const;
-
-const FEE_LOCKER_ABI = [
-  {
-    inputs: [
-      { name: 'feeOwner', type: 'address' },
-      { name: 'token', type: 'address' },
-    ],
-    name: 'feesToClaim',
-    outputs: [{ name: 'balance', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-] as const;
-
-interface FeeInfo {
-  wallet: `0x${string}`;
-  token: `0x${string}`;
+export interface FeeInfo {
+  wallet: Address;
+  token: Address;
   wethFees: bigint;
   wethFeesFormatted: string;
   tokenFees: bigint;
@@ -40,30 +29,36 @@ interface FeeInfo {
   hasClaimable: boolean;
 }
 
-async function checkFees(
-  walletAddress: `0x${string}`,
-  tokenAddress: `0x${string}`
+/**
+ * Check accumulated trading fees for a wallet/token pair.
+ * Uses multicall to batch both reads into a single RPC call.
+ */
+export async function checkFees(
+  walletAddress: Address,
+  tokenAddress: Address
 ): Promise<FeeInfo> {
-  const publicClient = createPublicClient({
-    chain: base,
-    transport: http('https://mainnet.base.org'),
+  const publicClient = getPublicClient();
+
+  // Batch both fee checks into a single RPC call
+  const results = await publicClient.multicall({
+    contracts: [
+      {
+        address: FEE_LOCKER,
+        abi: FEE_LOCKER_ABI,
+        functionName: 'feesToClaim',
+        args: [walletAddress, WETH],
+      },
+      {
+        address: FEE_LOCKER,
+        abi: FEE_LOCKER_ABI,
+        functionName: 'feesToClaim',
+        args: [walletAddress, tokenAddress],
+      },
+    ],
   });
 
-  // Check WETH fees (the valuable ones from trading)
-  const wethFees = await publicClient.readContract({
-    address: FEE_LOCKER_ADDRESS,
-    abi: FEE_LOCKER_ABI,
-    functionName: 'feesToClaim',
-    args: [walletAddress, WETH_ADDRESS],
-  });
-
-  // Check native token fees
-  const tokenFees = await publicClient.readContract({
-    address: FEE_LOCKER_ADDRESS,
-    abi: FEE_LOCKER_ABI,
-    functionName: 'feesToClaim',
-    args: [walletAddress, tokenAddress],
-  });
+  const wethFees = (results[0].result as bigint) ?? 0n;
+  const tokenFees = (results[1].result as bigint) ?? 0n;
 
   return {
     wallet: walletAddress,
@@ -77,27 +72,23 @@ async function checkFees(
 }
 
 async function main() {
-  // Parse arguments
+  // Parse arguments with validation
   const args = process.argv.slice(2);
   const walletIndex = args.indexOf('--wallet');
   const tokenIndex = args.indexOf('--token');
 
-  const walletAddress = (walletIndex !== -1 
-    ? args[walletIndex + 1] 
-    : process.env.WALLET_ADDRESS) as `0x${string}`;
+  const walletAddress = validateAddress(
+    walletIndex !== -1 ? args[walletIndex + 1] : process.env.WALLET_ADDRESS,
+    'wallet address'
+  );
 
-  const tokenAddress = (tokenIndex !== -1 
-    ? args[tokenIndex + 1] 
-    : process.env.TOKEN_ADDRESS) as `0x${string}`;
-
-  if (!walletAddress || !tokenAddress) {
-    console.error('Usage: npx tsx check-fees.ts --wallet 0x... --token 0x...');
-    console.error('Or set WALLET_ADDRESS and TOKEN_ADDRESS env vars');
-    process.exit(1);
-  }
+  const tokenAddress = validateAddress(
+    tokenIndex !== -1 ? args[tokenIndex + 1] : process.env.TOKEN_ADDRESS,
+    'token address'
+  );
 
   console.log('🔍 Checking Clawnch/Clanker Trading Fees\n');
-  console.log(`📍 Fee Locker: ${FEE_LOCKER_ADDRESS}`);
+  console.log(`📍 Fee Locker: ${FEE_LOCKER}`);
   console.log(`👛 Wallet:     ${walletAddress}`);
   console.log(`🪙 Token:      ${tokenAddress}\n`);
 
@@ -119,6 +110,10 @@ async function main() {
   return feeInfo;
 }
 
-main().catch(console.error);
+// Only run main if called directly (not imported)
+const isMainModule = process.argv[1]?.endsWith('check-fees.ts');
+if (isMainModule) {
+  main().catch(console.error);
+}
 
-export { checkFees, FeeInfo, FEE_LOCKER_ADDRESS, WETH_ADDRESS };
+// Re-export for convenience (already exported from lib)

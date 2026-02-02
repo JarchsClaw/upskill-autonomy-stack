@@ -4,54 +4,46 @@
  * Automated credit monitoring and replenishment.
  * The complete self-funding autonomy loop for AI agents.
  * 
- * This script:
- * 1. Monitors OpenRouter credit balance
- * 2. When balance drops below threshold, triggers purchase
- * 3. Uses ETH on Base (from Clawnch trading fees) to buy credits
- * 4. Logs all activity for transparency
- * 
  * Usage:
- *   # Run once (check and top-up if needed)
  *   OPENROUTER_API_KEY=sk-... PRIVATE_KEY=0x... npx tsx auto-topup.ts
- *   
- *   # Run with custom thresholds
  *   npx tsx auto-topup.ts --min-balance 10 --topup-amount 20
- *   
- *   # Daemon mode (check every 5 minutes)
  *   npx tsx auto-topup.ts --daemon --interval 300
  */
 
 import 'dotenv/config';
-import { createPublicClient, http, formatEther } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
-import { checkCredits } from './check-credits';
-import { purchaseCredits } from './purchase-credits';
+import { formatEther } from 'viem';
+import {
+  getPublicClient,
+  getAccount,
+  requireEnv,
+  RecoverableError,
+  isRecoverable,
+} from '../lib/index.js';
+import { checkCredits, LOW_BALANCE_THRESHOLD } from './check-credits.js';
+import { purchaseCredits } from './purchase-credits.js';
 
-interface TopupConfig {
-  minBalance: number;      // Minimum balance before triggering top-up ($)
-  topupAmount: number;     // Amount to purchase when topping up ($)
-  maxEthPerTopup: number;  // Maximum ETH to spend per top-up
-  daemon: boolean;         // Run continuously
-  intervalSeconds: number; // Check interval in daemon mode
-  dryRun: boolean;         // Don't execute transactions
+export interface TopupConfig {
+  minBalance: number;
+  topupAmount: number;
+  maxEthPerTopup: number;
+  daemon: boolean;
+  intervalSeconds: number;
+  dryRun: boolean;
 }
 
 const DEFAULT_CONFIG: TopupConfig = {
-  minBalance: 5,
-  topupAmount: 10,
-  maxEthPerTopup: 0.01, // ~$23 at $2300/ETH
+  minBalance: parseFloat(process.env.MIN_CREDITS || '5'),
+  topupAmount: parseFloat(process.env.CREDIT_PURCHASE_AMOUNT || '10'),
+  maxEthPerTopup: 0.01,
   daemon: false,
-  intervalSeconds: 300,
+  intervalSeconds: parseInt(process.env.CHECK_INTERVAL_MS || '300000', 10) / 1000,
   dryRun: false,
 };
 
-async function checkWalletBalance(address: `0x${string}`): Promise<bigint> {
-  const publicClient = createPublicClient({
-    chain: base,
-    transport: http('https://mainnet.base.org'),
-  });
-  return publicClient.getBalance({ address });
+async function checkWalletBalance(): Promise<bigint> {
+  const publicClient = getPublicClient();
+  const account = getAccount();
+  return publicClient.getBalance({ address: account.address });
 }
 
 async function runTopupCheck(config: TopupConfig): Promise<{
@@ -60,8 +52,9 @@ async function runTopupCheck(config: TopupConfig): Promise<{
   topupExecuted: boolean;
   txHash?: string;
 }> {
+  const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
   console.log('\n' + '='.repeat(60));
-  console.log(`🤖 UPSKILL Auto-Topup Check - ${new Date().toISOString()}`);
+  console.log(`[${timestamp}] 🔄 AUTONOMY CYCLE`);
   console.log('='.repeat(60));
 
   // Check current credit balance
@@ -82,10 +75,10 @@ async function runTopupCheck(config: TopupConfig): Promise<{
   console.log(`   Target top-up: $${config.topupAmount}`);
 
   // Check wallet ETH balance
-  const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-  const ethBalance = await checkWalletBalance(account.address);
+  const account = getAccount();
+  const ethBalance = await checkWalletBalance();
   const ethBalanceFloat = parseFloat(formatEther(ethBalance));
-  
+
   console.log(`\n🔐 Wallet: ${account.address}`);
   console.log(`   ETH Balance: ${formatEther(ethBalance)} ETH`);
 
@@ -97,12 +90,8 @@ async function runTopupCheck(config: TopupConfig): Promise<{
     console.log('   1. Claim trading fees from your Clawnch tokens');
     console.log('   2. Transfer ETH to wallet');
     console.log('   3. Swap WETH to ETH');
-    
-    return {
-      creditsBefore: credits.available,
-      creditsAfter: credits.available,
-      topupExecuted: false,
-    };
+
+    throw new RecoverableError('Insufficient ETH for top-up');
   }
 
   if (config.dryRun) {
@@ -114,13 +103,13 @@ async function runTopupCheck(config: TopupConfig): Promise<{
     };
   }
 
-  // Execute purchase
+  // Execute purchase with known balance to avoid extra RPC call
   console.log('\n🚀 Executing credit purchase...');
-  const txHash = await purchaseCredits(config.topupAmount, false);
-  
+  const txHash = await purchaseCredits(config.topupAmount, { knownBalance: ethBalance });
+
   // Check new balance
   const newCredits = await checkCredits();
-  
+
   console.log('\n📊 Top-up complete!');
   console.log(`   Before: $${credits.available.toFixed(2)}`);
   console.log(`   After:  $${newCredits.available.toFixed(2)}`);
@@ -130,9 +119,23 @@ async function runTopupCheck(config: TopupConfig): Promise<{
     creditsBefore: credits.available,
     creditsAfter: newCredits.available,
     topupExecuted: true,
-    txHash,
+    txHash: txHash ?? undefined,
   };
 }
+
+// Graceful shutdown handling
+let running = true;
+const MAX_CONSECUTIVE_FAILURES = 5;
+
+process.on('SIGINT', () => {
+  console.log('\n🛑 Received SIGINT, shutting down gracefully...');
+  running = false;
+});
+
+process.on('SIGTERM', () => {
+  console.log('\n🛑 Received SIGTERM, shutting down gracefully...');
+  running = false;
+});
 
 async function runDaemon(config: TopupConfig) {
   console.log('🔄 Starting auto-topup daemon...');
@@ -141,19 +144,44 @@ async function runDaemon(config: TopupConfig) {
   console.log(`   Top-up amount: $${config.topupAmount}`);
   console.log('\nPress Ctrl+C to stop\n');
 
-  while (true) {
+  let consecutiveFailures = 0;
+
+  while (running) {
+    const cycleStart = Date.now();
+
     try {
       await runTopupCheck(config);
+      consecutiveFailures = 0;
     } catch (error) {
-      console.error('❌ Error during check:', error);
+      consecutiveFailures++;
+
+      if (isRecoverable(error)) {
+        console.log(`\n⚠️ Recoverable error: ${error.message}`);
+      } else {
+        console.error(`\n❌ Error during check (${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES}):`, error);
+      }
+
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        console.error('\n🛑 Too many consecutive failures, stopping daemon');
+        process.exit(1);
+      }
     }
 
-    console.log(`\n⏰ Next check in ${config.intervalSeconds} seconds...`);
-    await new Promise(resolve => setTimeout(resolve, config.intervalSeconds * 1000));
+    if (!running) break;
+
+    // Calculate remaining wait time
+    const cycleDuration = Date.now() - cycleStart;
+    const remainingWait = Math.max(0, config.intervalSeconds * 1000 - cycleDuration);
+
+    if (remainingWait > 0) {
+      console.log(`\n⏰ Next check in ${(remainingWait / 1000).toFixed(1)}s...`);
+      await new Promise((resolve) => setTimeout(resolve, remainingWait));
+    }
   }
+
+  console.log('\n👋 Daemon stopped gracefully');
 }
 
-// Parse command line arguments
 function parseArgs(): TopupConfig {
   const args = process.argv.slice(2);
   const config = { ...DEFAULT_CONFIG };
@@ -176,15 +204,8 @@ async function main() {
   const config = parseArgs();
 
   // Validate environment
-  if (!process.env.OPENROUTER_API_KEY) {
-    console.error('Error: OPENROUTER_API_KEY not set');
-    process.exit(1);
-  }
-
-  if (!process.env.PRIVATE_KEY) {
-    console.error('Error: PRIVATE_KEY not set');
-    process.exit(1);
-  }
+  requireEnv('OPENROUTER_API_KEY');
+  requireEnv('PRIVATE_KEY');
 
   if (config.daemon) {
     await runDaemon(config);
@@ -193,6 +214,12 @@ async function main() {
   }
 }
 
-main().catch(console.error);
+const isMainModule = process.argv[1]?.endsWith('auto-topup.ts');
+if (isMainModule) {
+  main().catch((error) => {
+    console.error('❌ Error:', error.message);
+    process.exit(1);
+  });
+}
 
-export { runTopupCheck, TopupConfig };
+// runTopupCheck and TopupConfig already exported at definition

@@ -6,53 +6,37 @@
  * 
  * Usage:
  *   PRIVATE_KEY=0x... npx tsx claim-fees.ts --token 0x...
- *   
- *   # Claim both WETH and token fees
  *   npx tsx claim-fees.ts --token 0x... --claim-both
- *   
- *   # Dry run (check what would be claimed)
  *   npx tsx claim-fees.ts --token 0x... --dry-run
  */
 
 import 'dotenv/config';
-import { createPublicClient, createWalletClient, http, formatEther } from 'viem';
-import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
-import { checkFees, FEE_LOCKER_ADDRESS, WETH_ADDRESS } from './check-fees';
+import { formatEther, type Address } from 'viem';
+import {
+  getPublicClient,
+  getWalletClient,
+  getAccount,
+  FEE_LOCKER_ABI,
+  FEE_LOCKER,
+  WETH,
+  validateAddress,
+  withRetry,
+} from '../lib/index.js';
+import { checkFees } from './check-fees.js';
 
-const FEE_LOCKER_ABI = [
-  {
-    inputs: [
-      { name: 'feeOwner', type: 'address' },
-      { name: 'token', type: 'address' },
-    ],
-    name: 'feesToClaim',
-    outputs: [{ name: 'balance', type: 'uint256' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-  {
-    inputs: [
-      { name: 'feeOwner', type: 'address' },
-      { name: 'token', type: 'address' },
-    ],
-    name: 'claim',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-] as const;
-
-interface ClaimResult {
-  tokenAddress: `0x${string}`;
+export interface ClaimResult {
+  tokenAddress: Address;
   wethClaimed: bigint;
   tokenClaimed: bigint;
   wethTxHash?: string;
   tokenTxHash?: string;
 }
 
-async function claimFees(
-  tokenAddress: `0x${string}`,
+/**
+ * Claim accumulated trading fees from a Clanker token.
+ */
+export async function claimFees(
+  tokenAddress: Address,
   options: {
     claimBoth?: boolean;
     dryRun?: boolean;
@@ -60,18 +44,9 @@ async function claimFees(
 ): Promise<ClaimResult> {
   const { claimBoth = false, dryRun = false } = options;
 
-  const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
-  
-  const publicClient = createPublicClient({
-    chain: base,
-    transport: http('https://mainnet.base.org'),
-  });
-
-  const walletClient = createWalletClient({
-    account,
-    chain: base,
-    transport: http('https://mainnet.base.org'),
-  });
+  const account = getAccount();
+  const publicClient = getPublicClient();
+  const walletClient = getWalletClient();
 
   console.log('💰 Clanker Fee Claimer\n');
   console.log(`🔐 Wallet: ${account.address}`);
@@ -79,7 +54,7 @@ async function claimFees(
 
   // Check current fees
   const feeInfo = await checkFees(account.address, tokenAddress);
-  
+
   console.log('📊 Fees Available:');
   console.log(`   WETH:  ${feeInfo.wethFeesFormatted} WETH`);
   console.log(`   Token: ${feeInfo.tokenFeesFormatted} tokens\n`);
@@ -106,24 +81,50 @@ async function claimFees(
     return result;
   }
 
-  // Claim WETH fees (always claim these - they're valuable)
+  // Check gas balance before claiming
+  const balance = await publicClient.getBalance({ address: account.address });
+  const gasEstimate = await publicClient.estimateContractGas({
+    address: FEE_LOCKER,
+    abi: FEE_LOCKER_ABI,
+    functionName: 'claim',
+    args: [account.address, WETH],
+    account: account.address,
+  });
+  const gasPrice = await publicClient.getGasPrice();
+  const estimatedCost = gasEstimate * gasPrice;
+
+  const requiredBalance = (estimatedCost * 12n) / 10n; // 20% buffer
+  if (balance < requiredBalance) {
+    throw new Error(
+      `Insufficient ETH for gas. Need ~${formatEther(requiredBalance)} ETH, have ${formatEther(balance)} ETH`
+    );
+  }
+
+  // Claim WETH fees with retry
   if (feeInfo.wethFees > 0n) {
     console.log('📤 Claiming WETH fees...');
-    
-    const { request } = await publicClient.simulateContract({
-      address: FEE_LOCKER_ADDRESS,
-      abi: FEE_LOCKER_ABI,
-      functionName: 'claim',
-      args: [account.address, WETH_ADDRESS],
-      account,
-    });
 
-    const txHash = await walletClient.writeContract(request);
+    const txHash = await withRetry(async () => {
+      const { request } = await publicClient.simulateContract({
+        address: FEE_LOCKER,
+        abi: FEE_LOCKER_ABI,
+        functionName: 'claim',
+        args: [account.address, WETH],
+        account: account.address,
+      });
+
+      return walletClient.writeContract(request);
+    }, { retries: 2, onRetry: (err, attempt) => console.log(`   Retry ${attempt}: ${err.message}`) });
+
     console.log(`   TX: https://basescan.org/tx/${txHash}`);
-    
-    await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+    await publicClient.waitForTransactionReceipt({ 
+      hash: txHash,
+      confirmations: 1,
+      pollingInterval: 2000,
+    });
     console.log(`   ✅ Claimed ${feeInfo.wethFeesFormatted} WETH!\n`);
-    
+
     result.wethClaimed = feeInfo.wethFees;
     result.wethTxHash = txHash;
   }
@@ -131,21 +132,24 @@ async function claimFees(
   // Optionally claim token fees
   if (claimBoth && feeInfo.tokenFees > 0n) {
     console.log('📤 Claiming token fees...');
-    
-    const { request } = await publicClient.simulateContract({
-      address: FEE_LOCKER_ADDRESS,
-      abi: FEE_LOCKER_ABI,
-      functionName: 'claim',
-      args: [account.address, tokenAddress],
-      account,
-    });
 
-    const txHash = await walletClient.writeContract(request);
+    const txHash = await withRetry(async () => {
+      const { request } = await publicClient.simulateContract({
+        address: FEE_LOCKER,
+        abi: FEE_LOCKER_ABI,
+        functionName: 'claim',
+        args: [account.address, tokenAddress],
+        account: account.address,
+      });
+
+      return walletClient.writeContract(request);
+    }, { retries: 2 });
+
     console.log(`   TX: https://basescan.org/tx/${txHash}`);
-    
+
     await publicClient.waitForTransactionReceipt({ hash: txHash });
     console.log(`   ✅ Claimed ${feeInfo.tokenFeesFormatted} tokens!\n`);
-    
+
     result.tokenClaimed = feeInfo.tokenFees;
     result.tokenTxHash = txHash;
   }
@@ -159,23 +163,14 @@ async function claimFees(
   return result;
 }
 
-// Parse command line arguments
 async function main() {
-  if (!process.env.PRIVATE_KEY) {
-    console.error('Error: PRIVATE_KEY not set');
-    process.exit(1);
-  }
-
   const args = process.argv.slice(2);
   const tokenIndex = args.indexOf('--token');
-  const tokenAddress = (tokenIndex !== -1 
-    ? args[tokenIndex + 1] 
-    : process.env.TOKEN_ADDRESS) as `0x${string}`;
 
-  if (!tokenAddress) {
-    console.error('Usage: npx tsx claim-fees.ts --token 0x...');
-    process.exit(1);
-  }
+  const tokenAddress = validateAddress(
+    tokenIndex !== -1 ? args[tokenIndex + 1] : process.env.TOKEN_ADDRESS,
+    'token address'
+  );
 
   const claimBoth = args.includes('--claim-both');
   const dryRun = args.includes('--dry-run');
@@ -183,6 +178,9 @@ async function main() {
   await claimFees(tokenAddress, { claimBoth, dryRun });
 }
 
-main().catch(console.error);
+const isMainModule = process.argv[1]?.endsWith('claim-fees.ts');
+if (isMainModule) {
+  main().catch(console.error);
+}
 
-export { claimFees };
+// claimFees already exported at definition
