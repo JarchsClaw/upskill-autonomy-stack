@@ -21,6 +21,10 @@ import {
   WETH,
   validateAddress,
   withRetry,
+  parseArgs,
+  wantsHelp,
+  printHelp,
+  type CliConfig,
 } from '../lib/index.js';
 import { checkFees } from './check-fees.js';
 
@@ -34,6 +38,24 @@ export interface ClaimResult {
 
 /**
  * Claim accumulated trading fees from a Clanker token.
+ * 
+ * Part of the agent autonomy loop - converts trading activity into funds
+ * that can be used for OpenRouter credits or other operations.
+ * 
+ * @param tokenAddress - The Clanker token address to claim fees for
+ * @param options.claimBoth - If true, claim both WETH and native token fees
+ * @param options.dryRun - If true, simulate without executing transactions
+ * @returns Claim result with amounts and transaction hashes
+ * 
+ * @example
+ * // Claim only WETH fees
+ * const result = await claimFees('0xccaee0bf...', { dryRun: true });
+ * console.log(`Would claim ${result.wethClaimed} WETH`);
+ * 
+ * @example
+ * // Claim both WETH and token fees
+ * const result = await claimFees('0xccaee0bf...', { claimBoth: true });
+ * console.log(`Claimed ${result.wethTxHash}`);
  */
 export async function claimFees(
   tokenAddress: Address,
@@ -163,17 +185,37 @@ export async function claimFees(
   return result;
 }
 
+const CLI_CONFIG: CliConfig = {
+  name: 'claim-fees',
+  description: 'Claim accumulated trading fees from Clanker tokens.',
+  usage: 'npx tsx claim-fees.ts --token 0x... [options]',
+  options: [
+    { name: 'token', short: 't', description: 'Token address to claim fees from', required: true },
+    { name: 'claim-both', description: 'Claim both WETH and token fees' },
+    { name: 'dry-run', description: 'Simulate without executing transactions' },
+  ],
+  examples: [
+    'npx tsx claim-fees.ts --token 0xccaee0bf50E5790243c1D58F3682765709edEB07',
+    'npx tsx claim-fees.ts -t 0x... --claim-both',
+    'npx tsx claim-fees.ts -t 0x... --dry-run',
+  ],
+};
+
 async function main() {
-  const args = process.argv.slice(2);
-  const tokenIndex = args.indexOf('--token');
+  const args = parseArgs();
+  
+  if (wantsHelp(args)) {
+    printHelp(CLI_CONFIG);
+    process.exit(0);
+  }
 
   const tokenAddress = validateAddress(
-    tokenIndex !== -1 ? args[tokenIndex + 1] : process.env.TOKEN_ADDRESS,
-    'token address'
+    (args.token as string) || (args.t as string) || process.env.TOKEN_ADDRESS,
+    'token address (use --token or -t)'
   );
 
-  const claimBoth = args.includes('--claim-both');
-  const dryRun = args.includes('--dry-run');
+  const claimBoth = args['claim-both'] === true;
+  const dryRun = args['dry-run'] === true;
 
   await claimFees(tokenAddress, { claimBoth, dryRun });
 }

@@ -95,3 +95,13 @@ export {
   type TransferParams,
   type BalanceParams,
 } from './schemas.js';
+
+// CLI utilities
+export {
+  parseArgs,
+  wantsHelp,
+  printHelp,
+  COMMON_OPTIONS,
+  type CliOption,
+  type CliConfig,
+} from './cli.js';

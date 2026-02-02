@@ -27,16 +27,36 @@ import {
   withRetry,
 } from '../lib/index.js';
 
+// ============ Constants ============
+
+/** LLTV (Loan-to-Value) for CLAWNCH market: 38.5% */
+const CLAWNCH_LLTV_BPS = 385n; // basis points / 10 = 38.5%
+const LLTV_DIVISOR = 1000n;
+
+// ============ Types ============
+
 export interface MorphoPosition {
   collateral: bigint;
   collateralFormatted: string;
   borrowShares: bigint;
-  /** Note: Actual borrowed USDC requires market data conversion */
+  /** 
+   * Note: Actual borrowed USDC requires market data conversion.
+   * This is a simplified representation.
+   */
   borrowedUsdc: bigint;
   borrowedUsdcFormatted: string;
   /**
-   * Note: This is an approximation. Real health factor requires oracle price.
-   * Returns Infinity if no borrow position.
+   * Health factor for the position.
+   * 
+   * ⚠️ LIMITATION: This returns a placeholder value (1.0 if borrowing, Infinity if not).
+   * 
+   * Real health factor calculation requires:
+   * 1. Querying the CLAWNCH_ORACLE for current collateral price
+   * 2. Converting borrow shares to assets using market totalBorrowShares/Assets
+   * 3. Calculating: (collateralValue * LLTV) / borrowValue
+   * 
+   * @todo Integrate with CLAWNCH_ORACLE (0x81DD756b...) for accurate health factor
+   * @see https://docs.morpho.org/morpho/concepts/position-health
    */
   healthFactor: number;
   maxBorrowable: bigint;
@@ -93,9 +113,9 @@ export async function getPosition(walletAddress: Address): Promise<MorphoPositio
   const collateral = BigInt(position[2]);
   const borrowShares = BigInt(position[1]);
 
-  // NOTE: maxBorrowable is an approximation assuming 1 CLAWNCH ≈ some USDC value
-  // For accurate values, integrate with the Morpho oracle
-  const maxBorrowable = (collateral * 385n) / 1000n;
+  // NOTE: maxBorrowable is an approximation using LLTV only
+  // For accurate values, integrate with the Morpho oracle to get collateral price
+  const maxBorrowable = (collateral * CLAWNCH_LLTV_BPS) / LLTV_DIVISOR;
 
   return {
     collateral,

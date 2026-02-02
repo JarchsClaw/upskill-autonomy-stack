@@ -23,7 +23,24 @@ import {
   getEthPriceUsd,
   MAX_GAS_PRICE_GWEI,
   RecoverableError,
+  parseArgs,
+  wantsHelp,
+  printHelp,
+  type CliConfig,
 } from '../lib/index.js';
+
+// ============ Constants ============
+
+/** Uniswap V3 pool fee tier for ETH/USDC swap (0.05% = 500 bps) */
+const UNISWAP_POOL_FEE_TIER = 500;
+
+/** Buffer percentage added to ETH estimate to ensure sufficient value */
+const ETH_PRICE_BUFFER_PERCENT = 20;
+
+/** Polling interval for transaction confirmation (ms) */
+const TX_POLLING_INTERVAL_MS = 2000;
+
+// ============ Types ============
 
 interface PurchaseCalldataResponse {
   data: {
@@ -90,11 +107,36 @@ async function getPurchaseCalldata(
  * @returns ETH needed in wei (includes 20% buffer)
  */
 async function estimateEthRequired(usdAmount: number): Promise<bigint> {
-  return calculateEthForUsd(usdAmount, 20); // 20% buffer
+  return calculateEthForUsd(usdAmount, ETH_PRICE_BUFFER_PERCENT);
 }
 
 /**
- * Purchase OpenRouter credits using ETH on Base.
+ * Purchase OpenRouter API credits using ETH on Base.
+ * 
+ * Core of agent autonomy - converts earned trading fees (WETH) into
+ * inference credits, enabling agents to pay for their own compute.
+ * 
+ * Flow:
+ * 1. Get purchase calldata from OpenRouter API
+ * 2. Query Chainlink for live ETH/USD price
+ * 3. Check gas price against ceiling
+ * 4. Execute swap via Coinbase Commerce protocol
+ * 
+ * @param amount - USD amount of credits to purchase
+ * @param options.dryRun - If true, simulate without executing
+ * @param options.knownBalance - Skip balance check if already known
+ * @returns Transaction hash on success, null on dry run
+ * @throws {Error} If insufficient ETH balance
+ * @throws {RecoverableError} If gas price exceeds ceiling
+ * 
+ * @example
+ * // Purchase $10 in credits
+ * const txHash = await purchaseCredits(10);
+ * console.log(`Credits purchased: ${txHash}`);
+ * 
+ * @example
+ * // Dry run to check pricing
+ * await purchaseCredits(25, { dryRun: true });
  */
 export async function purchaseCredits(
   amount: number,
@@ -137,7 +179,7 @@ export async function purchaseCredits(
   console.log(`\n📊 Current ETH price: $${priceData.price.toFixed(2)} (via Chainlink)`);
   
   const ethValue = await estimateEthRequired(amount);
-  console.log(`⛽ Estimated ETH needed: ${formatEther(ethValue)} ETH (includes 20% buffer)`);
+  console.log(`⛽ Estimated ETH needed: ${formatEther(ethValue)} ETH (includes ${ETH_PRICE_BUFFER_PERCENT}% buffer)`);
 
   if (balance < ethValue) {
     throw new Error(
@@ -179,7 +221,7 @@ export async function purchaseCredits(
       account: account.address,
       address: contract_address,
       functionName: 'swapAndTransferUniswapV3Native',
-      args: [intent, 500], // 500 = 0.05% pool fee tier
+      args: [intent, UNISWAP_POOL_FEE_TIER],
       value: ethValue,
     });
 
@@ -196,7 +238,7 @@ export async function purchaseCredits(
   const receipt = await publicClient.waitForTransactionReceipt({
     hash: txHash,
     confirmations: 1,
-    pollingInterval: 2000,
+    pollingInterval: TX_POLLING_INTERVAL_MS,
   });
 
   if (receipt.status === 'success') {
@@ -211,13 +253,31 @@ export async function purchaseCredits(
   return txHash;
 }
 
+const CLI_CONFIG: CliConfig = {
+  name: 'purchase-credits',
+  description: 'Purchase OpenRouter API credits using ETH on Base via Coinbase Commerce.',
+  usage: 'npx tsx purchase-credits.ts [options]',
+  options: [
+    { name: 'amount', short: 'a', description: 'USD amount to purchase', default: '10' },
+    { name: 'dry-run', description: 'Simulate without executing transaction' },
+  ],
+  examples: [
+    'npx tsx purchase-credits.ts --amount 10',
+    'npx tsx purchase-credits.ts -a 25 --dry-run',
+  ],
+};
+
 async function main() {
-  const args = process.argv.slice(2);
-  const amountIndex = args.indexOf('--amount');
-  const amount = amountIndex !== -1 
-    ? validateAmount(args[amountIndex + 1], 'amount')
-    : 10;
-  const dryRun = args.includes('--dry-run');
+  const args = parseArgs();
+  
+  if (wantsHelp(args)) {
+    printHelp(CLI_CONFIG);
+    process.exit(0);
+  }
+
+  const amountStr = (args.amount as string) || (args.a as string) || '10';
+  const amount = validateAmount(amountStr, 'amount');
+  const dryRun = args['dry-run'] === true;
 
   await purchaseCredits(amount, { dryRun });
 }

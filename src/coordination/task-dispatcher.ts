@@ -61,6 +61,14 @@ export interface TaskResult {
 
 /**
  * Get tier for a given token balance.
+ * 
+ * Tier thresholds (sorted descending):
+ * - Unlimited: 1,000,000 tokens → unlimited tasks/day
+ * - Pro:       100,000 tokens  → 1,000 tasks/day
+ * - Basic:     10,000 tokens   → 100 tasks/day
+ * - Free:      0 tokens        → 10 tasks/day
+ * 
+ * @internal
  */
 function getTierForBalance(balance: bigint): Tier {
   for (const tier of TIER_THRESHOLDS) {
@@ -72,7 +80,20 @@ function getTierForBalance(balance: bigint): Tier {
 }
 
 /**
- * Get agent info including token balance and tier.
+ * Get agent info including UPSKILL token balance and compute tier.
+ * 
+ * Token holdings determine compute access:
+ * - Free (0):     10 tasks/day - basic experimentation
+ * - Basic (10K):  100 tasks/day - individual agents
+ * - Pro (100K):   1,000 tasks/day - production agents
+ * - Unlimited (1M): ∞ tasks/day - enterprise
+ * 
+ * @param walletAddress - The agent's wallet address to check
+ * @returns Agent info with balance, tier name, and daily quota
+ * 
+ * @example
+ * const info = await getAgentInfo('0xede1a30a8b04cca77ecc8d690c552ac7b0d63817');
+ * console.log(`Tier: ${info.tier}, Quota: ${info.dailyQuota}`);
  */
 export async function getAgentInfo(walletAddress: Address): Promise<AgentInfo> {
   const publicClient = getPublicClient();
@@ -241,5 +262,5 @@ if (isMainModule) {
   demo().catch(console.error);
 }
 
-// Functions already exported at definition; re-export constants for convenience
-export { TIER_THRESHOLDS };
+// Functions already exported at definition; re-export for testing and convenience
+export { TIER_THRESHOLDS, getTierForBalance };

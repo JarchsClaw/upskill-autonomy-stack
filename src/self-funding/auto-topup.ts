@@ -18,6 +18,10 @@ import {
   requireEnv,
   RecoverableError,
   isRecoverable,
+  parseArgs as cliParseArgs,
+  wantsHelp,
+  printHelp,
+  type CliConfig,
 } from '../lib/index.js';
 import { checkCredits, LOW_BALANCE_THRESHOLD } from './check-credits.js';
 import { purchaseCredits } from './purchase-credits.js';
@@ -182,26 +186,47 @@ async function runDaemon(config: TopupConfig) {
   console.log('\n👋 Daemon stopped gracefully');
 }
 
-function parseArgs(): TopupConfig {
-  const args = process.argv.slice(2);
+const CLI_CONFIG: CliConfig = {
+  name: 'auto-topup',
+  description: 'Automated credit monitoring and replenishment daemon.',
+  usage: 'npx tsx auto-topup.ts [options]',
+  options: [
+    { name: 'min-balance', description: 'Minimum credit balance before top-up', default: '5' },
+    { name: 'topup-amount', description: 'USD amount to purchase when topping up', default: '10' },
+    { name: 'interval', description: 'Check interval in seconds (daemon mode)', default: '300' },
+    { name: 'daemon', short: 'd', description: 'Run continuously in daemon mode' },
+    { name: 'dry-run', description: 'Simulate without executing transactions' },
+  ],
+  examples: [
+    'npx tsx auto-topup.ts                    # Single check',
+    'npx tsx auto-topup.ts --daemon           # Run continuously',
+    'npx tsx auto-topup.ts -d --interval 600  # Check every 10 minutes',
+    'npx tsx auto-topup.ts --dry-run          # Simulate',
+  ],
+};
+
+function parseLocalArgs(): TopupConfig {
+  const args = cliParseArgs();
   const config = { ...DEFAULT_CONFIG };
 
-  const getArg = (name: string, defaultVal: number): number => {
-    const index = args.indexOf(`--${name}`);
-    return index !== -1 ? parseFloat(args[index + 1]) : defaultVal;
-  };
-
-  config.minBalance = getArg('min-balance', DEFAULT_CONFIG.minBalance);
-  config.topupAmount = getArg('topup-amount', DEFAULT_CONFIG.topupAmount);
-  config.intervalSeconds = getArg('interval', DEFAULT_CONFIG.intervalSeconds);
-  config.daemon = args.includes('--daemon');
-  config.dryRun = args.includes('--dry-run');
+  if (args['min-balance']) config.minBalance = parseFloat(args['min-balance'] as string);
+  if (args['topup-amount']) config.topupAmount = parseFloat(args['topup-amount'] as string);
+  if (args['interval']) config.intervalSeconds = parseFloat(args['interval'] as string);
+  config.daemon = args.daemon === true || args.d === true;
+  config.dryRun = args['dry-run'] === true;
 
   return config;
 }
 
 async function main() {
-  const config = parseArgs();
+  const args = cliParseArgs();
+  
+  if (wantsHelp(args)) {
+    printHelp(CLI_CONFIG);
+    process.exit(0);
+  }
+  
+  const config = parseLocalArgs();
 
   // Validate environment
   requireEnv('OPENROUTER_API_KEY');

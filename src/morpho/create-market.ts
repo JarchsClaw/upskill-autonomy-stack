@@ -40,6 +40,11 @@ import {
   withRetry,
 } from '../lib/index.js';
 
+// ============ Constants ============
+
+/** TWAP observation window in seconds (5 minutes = 300 seconds) */
+const TWAP_WINDOW_SECONDS = 300;
+
 // Oracle created event for log parsing
 const ORACLE_CREATED_EVENT = {
   type: 'event',
@@ -225,7 +230,7 @@ export async function createMarket(
         tokenAddress,
         WETH,
         USDC,
-        300, // 5-minute TWAP
+        TWAP_WINDOW_SECONDS,
       ],
       account: account.address,
     });

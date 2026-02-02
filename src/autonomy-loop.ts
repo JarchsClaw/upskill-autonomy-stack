@@ -39,6 +39,10 @@ import {
   requireEnv,
   RecoverableError,
   isRecoverable,
+  parseArgs,
+  wantsHelp,
+  printHelp,
+  type CliConfig,
 } from './lib/index.js';
 import { checkFees } from './fee-claiming/check-fees.js';
 import { claimFees } from './fee-claiming/claim-fees.js';
@@ -276,12 +280,31 @@ async function runOnce() {
   console.log('   Run with --daemon for continuous operation');
 }
 
+const CLI_CONFIG: CliConfig = {
+  name: 'autonomy-loop',
+  description: 'The complete agent autonomy stack - earn, claim, fund, operate, repeat.',
+  usage: 'npx tsx autonomy-loop.ts [options]',
+  options: [
+    { name: 'daemon', short: 'd', description: 'Run continuously with automatic replenishment' },
+  ],
+  examples: [
+    'npx tsx autonomy-loop.ts           # Single cycle',
+    'npx tsx autonomy-loop.ts --daemon  # Run continuously',
+  ],
+};
+
 async function main() {
+  const args = parseArgs();
+  
+  if (wantsHelp(args)) {
+    printHelp(CLI_CONFIG);
+    process.exit(0);
+  }
+
   // Validate environment
   requireEnv('PRIVATE_KEY');
 
-  const args = process.argv.slice(2);
-  const daemonMode = args.includes('--daemon');
+  const daemonMode = args.daemon === true || args.d === true;
 
   if (daemonMode) {
     await runDaemon();
