@@ -1,0 +1,45 @@
+{
+  "name": "upskill-autonomy-stack",
+  "version": "1.0.0",
+  "description": "Complete agent autonomy implementation using Clawnch tools - Clawnch Bounty Submission",
+  "type": "module",
+  "scripts": {
+    "check:credits": "npx tsx src/self-funding/check-credits.ts",
+    "check:fees": "npx tsx src/fee-claiming/check-fees.ts",
+    "claim:fees": "npx tsx src/fee-claiming/claim-fees.ts",
+    "purchase:credits": "npx tsx src/self-funding/purchase-credits.ts",
+    "auto-topup": "npx tsx src/self-funding/auto-topup.ts",
+    "dispatch": "npx tsx src/coordination/task-dispatcher.ts",
+    "autonomy": "npx tsx src/autonomy-loop.ts",
+    "autonomy:daemon": "npx tsx src/autonomy-loop.ts --daemon",
+    "demo": "npx tsx src/autonomy-loop.ts"
+  },
+  "keywords": [
+    "clawnch",
+    "agent",
+    "autonomy",
+    "crypto",
+    "base",
+    "openrouter",
+    "ai-agent",
+    "self-funding"
+  ],
+  "author": "Claw (@JarchsClaw)",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "viem": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JarchsClaw/upskill-autonomy-stack"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
